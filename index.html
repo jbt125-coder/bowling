@@ -1425,7 +1425,7 @@ function genRoomCode(){
   return a+b+n;
 }
 
-let peer=null, hostConn=null, clientConns=[], wifiRole=null, roomCode='', wifiPlayerName='';
+let peer=null, hostConn=null, clientConns=[], wifiRole=null, roomCode='', wifiPlayerName='', wifiGameMode='traditional';
 
 function showWifiSetup(){ showScreen('wifiScreen'); }
 function showJoinScreen(){ showScreen('joinScreen'); document.getElementById('joinStatus').textContent=''; }
@@ -1503,9 +1503,22 @@ function handleClientMessage(conn, d){
     updateHostPlayerList();
     broadcastToClients({type:'playerList',players:getWifiPlayerNames()});
   }
-  if(d.type==='rolled'){
-    // Client took their turn — process it on host
-    // (In this simple model host runs all game logic, clients just trigger rolls)
+  if(d.type==='aim'&&G.phase==='aim'){
+    // Update lane offset from client aim gesture
+    lOff=d.offset;
+    G.ball.x=canvas.width*.5+lOff;
+  }
+  if(d.type==='roll'&&G.phase==='aim'){
+    // Execute roll on host using client's swipe data
+    const speed=Math.min(Math.sqrt(d.dx*d.dx+d.dy*d.dy)/d.dt,900);
+    const angle=Math.atan2(d.dx,-d.dy),norm=speed/900;
+    const wt=G.ballWeight;
+    const hm=wt<=10?1.4:wt<=12?1.0:0.6,sm=wt<=10?.8:wt<=12?.95:1.05;
+    G.ball.x=canvas.width*.5+(d.offset||0);
+    G.ball.vx=Math.sin(angle)*norm*11*hm;
+    G.ball.vy=-Math.max(3.5,norm*15*sm);
+    G.ball.active=true;G.phase='rolling';
+    broadcastGameState();
   }
 }
 
@@ -1515,9 +1528,9 @@ function broadcastToClients(msg){
 
 function hostStartGame(){
   const names=getWifiPlayerNames();
-  broadcastToClients({type:'gameStart',players:names});
+  broadcastToClients({type:'gameStart',players:names,gameMode:wifiGameMode});
   // Set up the game with wifi players
-  G=defaultG();G.playStyle='multi';G.gameMode='traditional';
+  G=defaultG();G.playStyle='multi';G.gameMode=wifiGameMode;
   G.players=names.map((name,i)=>({
     name,score:0,bonusPins:0,
     coins:getPD(name).coins,inventory:getPD(name).inventory||{},
@@ -1542,10 +1555,11 @@ function broadcastGameState(){
     currentPlayer:G.currentPlayer,
     players:G.players.map(p=>({name:p.name,score:p.score,frames:p.frames,strikes:p.strikes,spares:p.spares})),
     pinStates:G.pinObjs.map(p=>({x:p.x,y:p.y,state:p.state,rot:p.rot,tiltAngle:p.tiltAngle,tiltDir:p.tiltDir})),
-    ball:{x:G.ball.x,y:G.ball.y,vx:G.ball.vx,vy:G.ball.vy,active:G.ball.active,radius:G.ball.radius},
+    ball:{x:G.ball.x,y:G.ball.y,active:G.ball.active,radius:G.ball.radius}, // always send position
     splitBalls:G.splitBalls.map(s=>({x:s.x,y:s.y,radius:s.radius})),
     phase:G.phase,bonusPhase:G.bonusPhase,
-    isMyTurn:false, // set per-client below
+    laneOffset:lOff, // so client can show ball in correct aim position
+    isMyTurn:false,
   };
   // Tell each client whether it is their turn
   clientConns.forEach((c,idx)=>{
@@ -1602,8 +1616,9 @@ function initClientCanvas(){
   document.querySelectorAll('.screen').forEach(s=>{s.classList.remove('active');s.style.display='none';});
   canvas.style.display='block';
   document.getElementById('hud').style.display='block';
-  document.getElementById('powerupBar').style.display='none'; // no power-ups on client
+  document.getElementById('powerupBar').style.display='none';
   if(clientLoopId)cancelAnimationFrame(clientLoopId);
+  initClientTouchHandlers();
   clientLoop();
 }
 
@@ -1614,14 +1629,21 @@ function clientLoop(){
 
 function applyClientState(state){
   clientState=state;
-  // Update HUD from received state
+  const wasMyTurn=clientIsMyTurn;
+  clientIsMyTurn=state.isMyTurn;
+  // Show banner when turn starts
+  if(!wasMyTurn&&state.isMyTurn&&state.phase==='aim'){
+    showMsg('YOUR TURN 🎳','msg-spare');
+    clientLeftOff=0; // reset aim offset
+  }
+  // Update HUD
   const cp=state.players[state.currentPlayer];
   if(cp){
     document.getElementById('hudPlayer').textContent=`${cp.name} — Frame ${state.frame}`;
     document.getElementById('hudScore').textContent=cp.score||0;
     document.getElementById('hudCoins').textContent='';
   }
-  // Update frame display
+  // Frame display
   if(cp){
     const c=document.getElementById('frameDisplay');c.innerHTML='';
     for(let f=0;f<10;f++){
@@ -1631,10 +1653,6 @@ function applyClientState(state){
       d.innerHTML=`<div class="frame-num">${f+1}</div><div class="frame-rolls">${s||'·'}</div>`;
       c.appendChild(d);
     }
-  }
-  // Show whose turn banner
-  if(state.isMyTurn&&state.phase==='aim'){
-    showMsg('YOUR TURN 🎳','msg-spare');
   }
 }
 
@@ -1651,31 +1669,75 @@ function renderClientState(state){
       drawPin(fakePin);
     });
   }
-  // Draw ball
-  if(state.ball&&state.ball.active){
-    drawBall(state.ball.x,state.ball.y,state.ball.radius);
+  // Draw ball — always show it (aim position or rolling)
+  if(state.ball){
+    drawBall(state.ball.x,state.ball.y,state.ball.radius||21);
   }
   // Draw split balls
   if(state.splitBalls){
     state.splitBalls.forEach(sb=>drawBall(sb.x,sb.y,sb.radius));
   }
-  // If it is this client's turn and phase is aim, show the aim guide and hint
+  // Aim guide and ball override when it's client's turn in aim phase
   if(state.isMyTurn&&state.phase==='aim'){
-    ctx.fillStyle='rgba(245,200,66,.55)';ctx.font='bold 18px Georgia';ctx.textAlign='center';
-    ctx.fillText('← Swipe to aim    Swing right thumb to roll →',canvas.width*.5,canvas.height*.93);
-  } else {
-    const cp=state.players[state.currentPlayer];
-    ctx.fillStyle='rgba(255,255,255,.4)';ctx.font='15px Georgia';ctx.textAlign='center';
-    ctx.fillText(cp?`${cp.name} is bowling...`:'',canvas.width*.5,canvas.height*.93);
+    // Draw ball at client's local aim position (not host's)
+    const aimX=canvas.width*.5+clientLeftOff;
+    drawBall(aimX,canvas.height*.87,state.ball&&state.ball.radius?state.ball.radius:21);
+    // Aim guide line
+    ctx.strokeStyle='rgba(245,200,66,.25)';ctx.setLineDash([8,8]);ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.moveTo(aimX,canvas.height*.87);ctx.lineTo(aimX,canvas.height*.87-130);ctx.stroke();ctx.setLineDash([]);
+    ctx.fillStyle='rgba(245,200,66,.55)';ctx.font='bold 15px Georgia';ctx.textAlign='center';
+    ctx.fillText('← aim left    swing to bowl →',canvas.width*.5,canvas.height*.975);
+  } else if(!state.isMyTurn){
+    const cp=state.players&&state.players[state.currentPlayer];
+    ctx.fillStyle='rgba(255,255,255,.35)';ctx.font='14px Georgia';ctx.textAlign='center';
+    ctx.fillText(cp?`${cp.name} is bowling...`:'',canvas.width*.5,canvas.height*.975);
   }
 }
 
-// When it is the client's turn, they need to be able to bowl
-// Wire touch events to send roll data back to host
-function setupClientTouchForTurn(state){
-  if(!state.isMyTurn||state.phase!=='aim')return;
-  // Touch is already listening on canvas — but G is not the active game object on client
-  // We forward swipe data to host instead
+// Client-side touch — forwards swipe data to host when it is the client's turn
+let clientIsMyTurn=false, clientSwPts=[], clientLeftOff=0, clientLeftTouch=null, clientRightTouch=null;
+
+function initClientTouchHandlers(){
+  canvas.addEventListener('touchstart',e=>{
+    if(!clientIsMyTurn)return;
+    e.preventDefault();
+    Array.from(e.changedTouches).forEach(t=>{
+      if(t.clientX<canvas.width*.5&&!clientLeftTouch)clientLeftTouch={id:t.identifier,cx:t.clientX};
+      else if(t.clientX>=canvas.width*.5&&!clientRightTouch)clientRightTouch={id:t.identifier};
+      if(!clientRightTouch)clientSwPts=[{x:t.clientX,y:t.clientY,ts:Date.now()}];
+    });
+  },{passive:false});
+  canvas.addEventListener('touchmove',e=>{
+    if(!clientIsMyTurn)return;
+    e.preventDefault();
+    Array.from(e.changedTouches).forEach(t=>{
+      if(clientLeftTouch&&t.identifier===clientLeftTouch.id){
+        const dx=t.clientX-clientLeftTouch.cx;clientLeftTouch.cx=t.clientX;
+        const lw=canvas.width*.64;clientLeftOff=Math.max(-lw*.38,Math.min(lw*.38,clientLeftOff+dx));
+        // Tell host new aim position
+        if(hostConn)hostConn.send({type:'aim',offset:clientLeftOff});
+      }
+      if(clientRightTouch&&t.identifier===clientRightTouch.id)clientSwPts.push({x:t.clientX,y:t.clientY,ts:Date.now()});
+    });
+  },{passive:false});
+  canvas.addEventListener('touchend',e=>{
+    if(!clientIsMyTurn)return;
+    e.preventDefault();
+    Array.from(e.changedTouches).forEach(t=>{
+      if(clientLeftTouch&&t.identifier===clientLeftTouch.id)clientLeftTouch=null;
+      if(clientRightTouch&&t.identifier===clientRightTouch.id){
+        clientRightTouch=null;
+        if(clientSwPts.length>3){
+          // Calculate swipe and send to host
+          const last=clientSwPts[clientSwPts.length-1],prev=clientSwPts[Math.max(0,clientSwPts.length-5)];
+          const dt=Math.max(1,last.ts-prev.ts)/1000;
+          const dx=last.x-prev.x,dy=last.y-prev.y;
+          if(hostConn)hostConn.send({type:'roll',dx,dy,dt,offset:clientLeftOff});
+        }
+        clientSwPts=[];
+      }
+    });
+  },{passive:false});
 }
 
 
@@ -1696,17 +1758,27 @@ showScreen('titleScreen');
 
 <!-- HOST LOBBY -->
 
-<div id="hostScreen" class="screen" style="background:linear-gradient(180deg,#001a2a,#002a40);padding:24px;">
-  <div style="font-size:22px;color:#4af;font-weight:900;margin-bottom:6px;text-align:center;">🏠 Your Game Code</div>
-  <div style="color:#fff;font-size:13px;text-align:center;margin-bottom:16px;">Share this code with friends on the same WiFi</div>
-  <div id="hostCodeDisplay" style="background:#001020;border:3px solid #4af;border-radius:16px;padding:20px 24px;text-align:center;margin-bottom:20px;width:100%;max-width:340px;">
-    <div style="font-size:32px;font-weight:900;color:#f5c842;letter-spacing:2px;" id="hostCodeText">...</div>
-    <div style="color:#4af8;font-size:12px;margin-top:6px;">Generating code...</div>
+<div id="hostScreen" class="screen" style="background:linear-gradient(180deg,#001a2a,#002a40);padding:20px;overflow-y:auto;">
+  <div style="width:100%;max-width:360px;display:flex;flex-direction:column;align-items:center;">
+    <div style="font-size:22px;color:#4af;font-weight:900;margin-bottom:14px;text-align:center;">🏠 Host a Game</div>
+    <!-- Host name -->
+    <input id="hostNameInput" placeholder="Your name" style="width:100%;background:#001020;border:2px solid #4af;border-radius:12px;color:#f5c842;font-size:18px;padding:12px;font-family:Georgia,serif;outline:none;text-align:center;margin-bottom:12px;" oninput="wifiPlayerName=this.value;updateHostPlayerList()">
+    <!-- Game mode -->
+    <div style="color:#4af8;font-size:12px;letter-spacing:2px;margin-bottom:8px;">GAME MODE</div>
+    <div style="display:flex;gap:10px;width:100%;margin-bottom:14px;">
+      <button class="mode-btn selected" id="wifiTradBtn" onclick="wifiGameMode='traditional';document.getElementById('wifiTradBtn').classList.add('selected');document.getElementById('wifiBonusBtn').classList.remove('selected')">🎳 Traditional</button>
+      <button class="mode-btn" id="wifiBonusBtn" onclick="wifiGameMode='bonus';document.getElementById('wifiBonusBtn').classList.add('selected');document.getElementById('wifiTradBtn').classList.remove('selected')">⭐ Bonus</button>
+    </div>
+    <!-- Room code -->
+    <div id="hostCodeDisplay" style="background:#001020;border:3px solid #4af;border-radius:16px;padding:16px 24px;text-align:center;margin-bottom:14px;width:100%;">
+      <div style="color:#4af8;font-size:11px;margin-bottom:4px;">GAME CODE — share with friends</div>
+      <div style="font-size:30px;font-weight:900;color:#f5c842;letter-spacing:2px;" id="hostCodeText">...</div>
+    </div>
+    <div id="hostPlayerList" style="width:100%;margin-bottom:10px;"></div>
+    <div id="hostStatus" style="color:#4af;font-size:13px;text-align:center;margin-bottom:12px;">Waiting for players...</div>
+    <button id="hostStartBtn" class="menu-btn btn-primary" onclick="hostStartGame()" style="display:none;">🎳 Start Game!</button>
+    <button class="menu-btn btn-secondary" onclick="disconnectWifi();showScreen('wifiScreen')" style="margin-top:6px;font-size:14px;">← Cancel</button>
   </div>
-  <div id="hostPlayerList" style="width:100%;max-width:340px;margin-bottom:16px;"></div>
-  <div id="hostStatus" style="color:#4af;font-size:13px;text-align:center;margin-bottom:16px;">Waiting for players...</div>
-  <button id="hostStartBtn" class="menu-btn btn-primary" onclick="hostStartGame()" style="display:none;">🎳 Start Game!</button>
-  <button class="menu-btn btn-secondary" onclick="disconnectWifi();showScreen('wifiScreen')" style="margin-top:8px;font-size:14px;">← Cancel</button>
 </div>
 
 <!-- JOIN SCREEN -->
