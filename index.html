@@ -96,7 +96,7 @@ canvas { display:block; touch-action:none; }
 </head>
 <body>
 
-<div id="titleScreen" class="screen active">
+<div id="titleScreen" class="screen active" style="text-align:center;justify-content:center;align-items:center;">
   <div class="title-pins">🎳 🎳 🎳</div>
   <div class="title-logo">BOWLING KING</div>
   <div class="title-sub">Roll to Glory</div>
@@ -253,7 +253,7 @@ function defaultG(){
     players:[],currentPlayer:0,ballWeight:12,
     frame:1,roll:1,
     pinObjs:[],
-    ball:{x:0,y:0,vx:0,vy:0,active:false,radius:18},
+    ball:{x:0,y:0,vx:0,vy:0,active:false,radius:21},
     splitBalls:[],particles:[],lightningArcs:[],
     phase:'aim',settleTimer:0,
     activePowerup:null,
@@ -451,7 +451,7 @@ function consumeSpecial(){
 // ═══════════════════════════════════════════════
 // PIN SETUP
 // ═══════════════════════════════════════════════
-const PR=11,PF=0.84,PAF=0.80,PMASS=1,BMASS=3.2;
+const PR=11,PF=0.92,PAF=0.80,PMASS=1,BMASS=3.2; // PF raised: pins slide farther
 function mkPin(x,y){
   return{
     x,y,ox:x,oy:y,
@@ -503,7 +503,7 @@ function setupBonusPins(){
 // BALL INIT
 // ═══════════════════════════════════════════════
 function initBall(sx){
-  G.ball={x:sx||canvas.width*.5,y:canvas.height*.87,vx:0,vy:0,active:false,radius:18};
+  G.ball={x:sx||canvas.width*.5,y:canvas.height*.87,vx:0,vy:0,active:false,radius:21};
   G.particles=[];G.lightningArcs=[];G.resultFired=false;
 }
 
@@ -780,7 +780,7 @@ function updatePins(){
 
       // The tip of the falling pin sweeps an arc — check if it hits another pin
       // Arc tip position: pin pivots from its base (y+8), so tip travels outward
-      const pinLen = 20; // how long the pin is when lying flat
+      const pinLen = 26; // reach of falling pin arc — must cover pin spacing
       const arcFrac = Math.abs(p.tiltAngle) / (Math.PI * 0.5);
       const tipX = p.x + p.tiltDir * pinLen * Math.sin(Math.abs(p.tiltAngle));
       const tipY = p.y - pinLen * Math.cos(Math.abs(p.tiltAngle)) + pinLen;
@@ -789,7 +789,7 @@ function updatePins(){
         const dx=tipX-p2.x, dy=tipY-p2.y;
         if(dx*dx+dy*dy<(PR*2.8)*(PR*2.8)){
           p2.hitCount++;
-          const prob=Math.min(0.96, p.tiltVel*6 + arcFrac*0.5);
+          const prob=Math.min(0.98, p.tiltVel*8 + arcFrac*0.6);
           if(Math.random()<prob){
             knockPin(j, p.tiltDir*p.tiltVel*4, p.tiltVel*0.5, p.tiltVel*5);
             spawnParts(p2.x,p2.y,'#ffe',8);
@@ -801,8 +801,8 @@ function updatePins(){
       if(Math.abs(p.tiltAngle)>=Math.PI*0.48){
         p.tiltAngle=Math.PI*0.48*p.tiltDir;
         p.state='sliding';
-        p.vx += p.tiltDir * p.tiltVel * 3.5;
-        p.vy += p.tiltVel * 0.3;
+        p.vx += p.tiltDir * p.tiltVel * 6.0;  // stronger lateral energy
+        p.vy += p.tiltVel * 0.8;                 // more forward momentum toward back pins
         spawnParts(p.x,p.y,'rgba(200,200,200,0.5)',4); // small dust puff on landing
       }
       return;
@@ -821,15 +821,15 @@ function updatePins(){
         if(j===i||p2.state!=='standing')return;
         const dx=p.x-p2.x, dy=p.y-p2.y;
         const dist=Math.sqrt(dx*dx+dy*dy);
-        if(dist<PR*2.4){
+        if(dist<PR*3.0){ // wider hit radius so sliding pins can reach corner pins
           const spd=Math.sqrt(p.vx*p.vx+p.vy*p.vy);
           const prob=Math.min(0.95,spd/5.5);
           if(Math.random()<prob){
             const nx=dx/dist, ny=dy/dist;
-            const imp=spd*.78;
+            const imp=spd*.92; // stronger impulse transfer pin-to-pin
             knockPin(j,-nx*imp,-ny*imp,imp);
             // Sliding pin loses energy on collision
-            p.vx*=.5; p.vy*=.5;
+            p.vx*=.65; p.vy*=.65; // retain more energy through chain hits
             spawnParts(p2.x,p2.y,'#ffe',5);
           }
         }
@@ -939,6 +939,7 @@ function handleRollResult(knocked){
   }
   checkCoins(frame.rolls,newK);
   advanceRoll(frame.rolls);
+  if(G.wifiMode)setTimeout(()=>broadcastGameState(),100);
 }
 
 function checkCoins(rolls,pinCount){
@@ -1396,6 +1397,11 @@ function updateSplitBalls(){
 }
 function gameLoop(){
   updateBall();updateSplitBalls();updatePins();updateParts();checkSettled();drawScene();
+  // Stream live state to clients every 3 frames during rolling for smooth animation
+  if(G.wifiMode&&G.phase==='rolling'){
+    G._broadcastTick=(G._broadcastTick||0)+1;
+    if(G._broadcastTick%3===0)broadcastGameState();
+  }
   G.animFrame=requestAnimationFrame(gameLoop);
 }
 function startLoop(){
@@ -1535,10 +1541,16 @@ function broadcastGameState(){
     frame:G.frame,roll:G.roll,
     currentPlayer:G.currentPlayer,
     players:G.players.map(p=>({name:p.name,score:p.score,frames:p.frames,strikes:p.strikes,spares:p.spares})),
-    pinStates:G.pinObjs.map(p=>({x:p.x,y:p.y,state:p.state,rot:p.rot,tiltAngle:p.tiltAngle})),
+    pinStates:G.pinObjs.map(p=>({x:p.x,y:p.y,state:p.state,rot:p.rot,tiltAngle:p.tiltAngle,tiltDir:p.tiltDir})),
+    ball:{x:G.ball.x,y:G.ball.y,vx:G.ball.vx,vy:G.ball.vy,active:G.ball.active,radius:G.ball.radius},
+    splitBalls:G.splitBalls.map(s=>({x:s.x,y:s.y,radius:s.radius})),
     phase:G.phase,bonusPhase:G.bonusPhase,
+    isMyTurn:false, // set per-client below
   };
-  broadcastToClients(state);
+  // Tell each client whether it is their turn
+  clientConns.forEach((c,idx)=>{
+    try{c.send({...state,isMyTurn:(G.currentPlayer===idx+1)});}catch(e){}
+  });
 }
 
 function joinGame(){
@@ -1576,36 +1588,94 @@ function handleHostMessage(d){
     document.getElementById('joinStatus').textContent=`Players: ${d.players.join(', ')}`;
   }
   if(d.type==='gameStart'){
-    showScreen('clientWaitScreen');
-    document.getElementById('clientWaitTitle').textContent='🎳 Game Starting!';
-    document.getElementById('clientWaitMsg').textContent='Game is beginning...';
+    // Show the game canvas — client sees exactly what host sees
+    initClientCanvas();
   }
   if(d.type==='gameState'){
-    updateClientView(d);
-  }
-  if(d.type==='yourTurn'){
-    // Switch to gameplay for this client's turn
-    document.getElementById('clientWaitMsg').textContent='YOUR TURN! 🎳';
-    // In future: show the full game canvas for client input
+    applyClientState(d);
   }
 }
 
-function updateClientView(state){
-  showScreen('clientWaitScreen');
+// Client canvas setup — reuse the same canvas element
+let clientState=null, clientLoopId=null;
+function initClientCanvas(){
+  document.querySelectorAll('.screen').forEach(s=>{s.classList.remove('active');s.style.display='none';});
+  canvas.style.display='block';
+  document.getElementById('hud').style.display='block';
+  document.getElementById('powerupBar').style.display='none'; // no power-ups on client
+  if(clientLoopId)cancelAnimationFrame(clientLoopId);
+  clientLoop();
+}
+
+function clientLoop(){
+  if(clientState)renderClientState(clientState);
+  clientLoopId=requestAnimationFrame(clientLoop);
+}
+
+function applyClientState(state){
+  clientState=state;
+  // Update HUD from received state
   const cp=state.players[state.currentPlayer];
-  document.getElementById('clientWaitTitle').textContent=
-    `Frame ${state.frame} — ${cp.name}'s Turn`;
-  document.getElementById('clientWaitMsg').textContent=
-    state.phase==='aim'?`${cp.name} is aiming...`:
-    state.phase==='rolling'?`${cp.name} is rolling!`:
-    `Frame ${state.frame}, Roll ${state.roll}`;
-  // Show mini scoreboard
-  const sb=document.getElementById('clientScoreboard');
-  sb.innerHTML=state.players.map(p=>`
-    <div style="background:#001020;border:1px solid #4af4;border-radius:10px;padding:10px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">
-      <span style="color:#f5c842;font-weight:700;">${p.name}</span>
-      <span style="color:#fff;font-size:20px;font-weight:900;">${p.score}</span>
-    </div>`).join('');
+  if(cp){
+    document.getElementById('hudPlayer').textContent=`${cp.name} — Frame ${state.frame}`;
+    document.getElementById('hudScore').textContent=cp.score||0;
+    document.getElementById('hudCoins').textContent='';
+  }
+  // Update frame display
+  if(cp){
+    const c=document.getElementById('frameDisplay');c.innerHTML='';
+    for(let f=0;f<10;f++){
+      const d=document.createElement('div');d.className='frame-box'+(f+1===state.frame?' current':'');
+      const rolls=cp.frames[f].rolls;
+      let s=rolls[0]===10?'X':rolls.length>=2&&rolls[0]+rolls[1]===10?`${rolls[0]}/`:rolls.map(r=>r===0?'-':r).join(' ');
+      d.innerHTML=`<div class="frame-num">${f+1}</div><div class="frame-rolls">${s||'·'}</div>`;
+      c.appendChild(d);
+    }
+  }
+  // Show whose turn banner
+  if(state.isMyTurn&&state.phase==='aim'){
+    showMsg('YOUR TURN 🎳','msg-spare');
+  }
+}
+
+function renderClientState(state){
+  if(!state)return;
+  // Draw the lane
+  drawLane();
+  // Draw pins from received positions
+  if(state.pinStates){
+    state.pinStates.forEach(ps=>{
+      // Construct a minimal pin-like object for drawing
+      const fakePin={x:ps.x,y:ps.y,state:ps.state,rot:ps.rot||0,tiltAngle:ps.tiltAngle||0,
+        tiltDir:ps.tiltDir||1,sweepAlpha:1,vRot:0,spinFloor:0};
+      drawPin(fakePin);
+    });
+  }
+  // Draw ball
+  if(state.ball&&state.ball.active){
+    drawBall(state.ball.x,state.ball.y,state.ball.radius);
+  }
+  // Draw split balls
+  if(state.splitBalls){
+    state.splitBalls.forEach(sb=>drawBall(sb.x,sb.y,sb.radius));
+  }
+  // If it is this client's turn and phase is aim, show the aim guide and hint
+  if(state.isMyTurn&&state.phase==='aim'){
+    ctx.fillStyle='rgba(245,200,66,.55)';ctx.font='bold 18px Georgia';ctx.textAlign='center';
+    ctx.fillText('← Swipe to aim    Swing right thumb to roll →',canvas.width*.5,canvas.height*.93);
+  } else {
+    const cp=state.players[state.currentPlayer];
+    ctx.fillStyle='rgba(255,255,255,.4)';ctx.font='15px Georgia';ctx.textAlign='center';
+    ctx.fillText(cp?`${cp.name} is bowling...`:'',canvas.width*.5,canvas.height*.93);
+  }
+}
+
+// When it is the client's turn, they need to be able to bowl
+// Wire touch events to send roll data back to host
+function setupClientTouchForTurn(state){
+  if(!state.isMyTurn||state.phase!=='aim')return;
+  // Touch is already listening on canvas — but G is not the active game object on client
+  // We forward swipe data to host instead
 }
 
 
