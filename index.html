@@ -182,6 +182,14 @@ canvas { display:block; touch-action:none; }
 <div id="scoreScreen" class="screen">
   <div class="setup-title" style="margin-top:20px;">🏆 Game Over!</div>
   <div id="scoreCards" class="scroll-area"></div>
+  <!-- Tap-to-expand scorecard modal -->
+  <div id="scorecardModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.88);z-index:300;overflow-y:auto;padding:20px;">
+    <div style="max-width:420px;margin:0 auto;">
+      <div style="color:#f5c842;font-size:20px;font-weight:900;margin-bottom:14px;text-align:center;" id="scorecardTitle">Scorecard</div>
+      <div id="scorecardContent"></div>
+      <button class="menu-btn btn-secondary" onclick="document.getElementById('scorecardModal').style.display='none'" style="margin-top:16px;">✕ Close</button>
+    </div>
+  </div>
   <button class="menu-btn btn-primary" onclick="goToShop()" style="margin-top:8px;">🛒 Bowl Shop</button>
   <button class="menu-btn btn-secondary" onclick="showScreen('titleScreen')" style="margin-top:4px;">🏠 Main Menu</button>
 </div>
@@ -870,11 +878,12 @@ function sweepFallenPins(cb){
       anyFallen=true;
       p.state='swept';
       p.sweepAlpha=1;
-      // Slide toward the back of the lane (negative y = toward pins)
       p.vx=(p.x-canvas.width*.5)*.04+(Math.random()-.5)*1.5;
       p.vy=-2.5-Math.random()*1.5;
     }
   });
+  // Immediately tell clients which pins are now swept
+  if(G.wifiMode)broadcastGameState();
   const delay=anyFallen?700:100;
   setTimeout(cb,delay);
 }
@@ -1134,9 +1143,11 @@ function renderScoreScreen(){
   const c=document.getElementById('scoreCards');c.innerHTML='';
   sorted.forEach((pl,r)=>{
     const medals=['🥇','🥈','🥉','4️⃣'];const d=document.createElement('div');d.className='score-card';
+    d.style.cursor='pointer';
     d.innerHTML=`<div class="score-player">${medals[r]} ${pl.name}</div>
     <div class="score-total">${pl.score} pts</div>
     ${pl._nb?'<div class="pb-badge">🎉 New Personal Best!</div>':''}
+    <div style="color:#f5c84288;font-size:11px;margin-top:8px;">👆 Tap to see full scorecard</div>
     <div class="score-stats">
       <span class="stat-pill">🎳 ${pl.strikes} Strikes</span>
       <span class="stat-pill">✨ ${pl.spares} Spares</span>
@@ -1144,8 +1155,78 @@ function renderScoreScreen(){
       <span class="stat-pill">🎯 Bonus:${pl.bonusPins||0}</span>
       <span class="stat-pill">🪙 +${pl.coins}</span>
       <span class="stat-pill">📅 Best:${pl._pd.bestScore}</span>
-    </div>`;c.appendChild(d);
+    </div>`;
+    d.onclick=()=>showScorecard(pl);
+    c.appendChild(d);
   });
+}
+
+function showScorecard(pl){
+  document.getElementById('scorecardTitle').textContent=`${pl.name}'s Scorecard`;
+  const con=document.getElementById('scorecardContent');
+  // Build classic 10-frame bowling scorecard
+  let html='<div style="overflow-x:auto;">';
+  html+='<table style="width:100%;border-collapse:collapse;font-family:Georgia,serif;">';
+  // Frame headers
+  html+='<tr>';
+  for(let f=1;f<=10;f++){
+    html+=`<th style="border:1px solid #f5c84244;padding:4px;color:#c8963e;font-size:11px;text-align:center;background:#1a0d04;">${f}</th>`;
+  }
+  html+='</tr>';
+  // Rolls row
+  html+='<tr>';
+  for(let f=0;f<10;f++){
+    const rolls=pl.frames[f].rolls||[];
+    let cells='';
+    if(f<9){
+      const r1=rolls[0];const r2=rolls[1];
+      const s1=r1===10?'X':(r1===0?'-':r1);
+      const s2=r1===10?'':(r1+r2===10?'/':(r2===0?'-':(r2!==undefined?r2:'')));
+      cells=`<div style="display:flex;justify-content:flex-end;gap:2px;padding:4px;">
+        <span style="font-size:11px;color:#888;">${s1}</span>
+        <span style="font-size:13px;font-weight:900;color:#f5c842;">${s2}</span>
+      </div>`;
+    } else {
+      // 10th frame — up to 3 rolls
+      const r0=rolls[0],r1=rolls[1],r2=rolls[2];
+      const s0=r0===10?'X':(r0===0?'-':r0);
+      const s1=r0===10?(r1===10?'X':(r1===0?'-':r1)):(r0+r1===10?'/':(r1===0?'-':(r1!==undefined?r1:'')));
+      const s2=r2!==undefined?(r2===10?'X':(r2===0?'-':r2)):'';
+      cells=`<div style="display:flex;justify-content:flex-end;gap:2px;padding:4px;">
+        <span style="font-size:10px;color:#888;">${s0}</span>
+        <span style="font-size:10px;color:#888;">${s1}</span>
+        <span style="font-size:12px;font-weight:900;color:#f5c842;">${s2}</span>
+      </div>`;
+    }
+    html+=`<td style="border:1px solid #f5c84244;background:#0d0800;vertical-align:top;">${cells}</td>`;
+  }
+  html+='</tr>';
+  // Cumulative score row
+  html+='<tr>';
+  let running=0;
+  for(let f=0;f<10;f++){
+    const rolls=pl.frames[f].rolls||[];
+    const all=pl.frames.flatMap(fr=>fr.rolls);
+    const si=pl.frames.slice(0,f).reduce((a,fr)=>a+fr.rolls.length,0);
+    if(!rolls.length){html+='<td style="border:1px solid #f5c84244;padding:8px;text-align:center;background:#1a0d04;"></td>';continue;}
+    if(f<9){
+      if(rolls[0]===10)running+=10+(all[si+1]||0)+(all[si+2]||0);
+      else if((rolls[0]||0)+(rolls[1]||0)===10)running+=10+(all[si+2]||0);
+      else running+=(rolls[0]||0)+(rolls[1]||0);
+    } else {
+      running+=rolls.reduce((a,b)=>a+b,0);
+    }
+    html+=`<td style="border:1px solid #f5c84244;padding:8px;text-align:center;background:#1a0d04;color:#fff;font-weight:900;font-size:16px;">${running}</td>`;
+  }
+  html+='</tr>';
+  html+='</table></div>';
+  // Bonus pins if any
+  if(pl.bonusPins){
+    html+=`<div style="color:#4f4;text-align:center;margin-top:10px;font-size:14px;">🎯 Bonus pins: +${pl.bonusPins}</div>`;
+    html+=`<div style="color:#f5c842;text-align:center;font-size:18px;font-weight:900;margin-top:4px;">Total: ${pl.score}</div>`;
+  }
+  con.innerHTML=html;
+  document.getElementById('scorecardModal').style.display='block';
 }
 
 function goToShop(){
@@ -1579,7 +1660,7 @@ function broadcastGameState(){
     frame:G.frame,roll:G.roll,
     currentPlayer:G.currentPlayer,
     players:G.players.map(p=>({name:p.name,score:p.score,frames:p.frames,strikes:p.strikes,spares:p.spares})),
-    pinStates:G.pinObjs.map(p=>({x:p.x,y:p.y,state:p.state,rot:p.rot,tiltAngle:p.tiltAngle,tiltDir:p.tiltDir})),
+    pinStates:G.pinObjs.map(p=>({x:p.x,y:p.y,state:p.state,rot:p.rot,tiltAngle:p.tiltAngle,tiltDir:p.tiltDir,sweepAlpha:p.sweepAlpha})),
     ball:{x:G.ball.x,y:G.ball.y,active:G.ball.active,radius:G.ball.radius}, // always send position
     splitBalls:G.splitBalls.map(s=>({x:s.x,y:s.y,radius:s.radius})),
     phase:G.phase,bonusPhase:G.bonusPhase,
@@ -1691,7 +1772,7 @@ function renderClientState(state){
     state.pinStates.forEach(ps=>{
       // Construct a minimal pin-like object for drawing
       const fakePin={x:ps.x,y:ps.y,state:ps.state,rot:ps.rot||0,tiltAngle:ps.tiltAngle||0,
-        tiltDir:ps.tiltDir||1,sweepAlpha:1,vRot:0,spinFloor:0};
+        tiltDir:ps.tiltDir||1,sweepAlpha:ps.sweepAlpha!==undefined?ps.sweepAlpha:1,vRot:0,spinFloor:0};
       drawPin(fakePin);
     });
   }
