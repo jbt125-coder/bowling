@@ -511,7 +511,11 @@ function initBall(sx){
 // TOUCH
 // ═══════════════════════════════════════════════
 let lT=null,rT=null,lOff=0,swPts=[];
+// isClientDevice: true when this phone joined as a client (P2/P3/P4)
+let isClientDevice=false;
+
 canvas.addEventListener('touchstart',e=>{
+  if(isClientDevice)return; // client has its own handlers
   e.preventDefault();
   Array.from(e.changedTouches).forEach(t=>{
     if(t.clientX<canvas.width*.5&&!lT)lT={id:t.identifier,cx:t.clientX};
@@ -520,6 +524,7 @@ canvas.addEventListener('touchstart',e=>{
   if(!G.ball.active)initBall(canvas.width*.5+lOff);
 },{passive:false});
 canvas.addEventListener('touchmove',e=>{
+  if(isClientDevice)return;
   e.preventDefault();
   Array.from(e.changedTouches).forEach(t=>{
     if(lT&&t.identifier===lT.id){const dx=t.clientX-lT.cx;lT.cx=t.clientX;const lw=canvas.width*.64;lOff=Math.max(-lw*.38,Math.min(lw*.38,lOff+dx));if(!G.ball.active)G.ball.x=canvas.width*.5+lOff;}
@@ -527,6 +532,7 @@ canvas.addEventListener('touchmove',e=>{
   });
 },{passive:false});
 canvas.addEventListener('touchend',e=>{
+  if(isClientDevice)return;
   e.preventDefault();
   Array.from(e.changedTouches).forEach(t=>{
     if(lT&&t.identifier===lT.id)lT=null;
@@ -964,13 +970,24 @@ function advanceRoll(rolls){
   const isSpare=!isStrike&&rolls.length>=2&&rolls[0]+rolls[1]===10;
   let nextAction='nextRoll',resetPins=false;
   if(isTenth){
-    if(rolls.length===3)nextAction='nextFrame';
-    else if(rolls.length===2&&!isStrike&&!isSpare)nextAction='nextFrame';
-    else{
+    if(rolls.length===3){
+      nextAction='nextFrame';
+    } else if(rolls.length===2&&!isStrike&&!isSpare){
+      nextAction='nextFrame';
+    } else {
       nextAction='nextRoll';
-      if(rolls.length===1&&isStrike)resetPins=true;
-      if(rolls.length===2&&isSpare)resetPins=true;
-      if(rolls.length===2&&rolls[0]===10&&rolls[1]===10)resetPins=true;
+      if(rolls.length===1&&isStrike){
+        // Roll 1 was a strike — reset all 10 for roll 2
+        resetPins=true;
+      }
+      if(rolls.length===2){
+        // After roll 2, need fresh pins for roll 3 if:
+        // - Roll 2 was also a strike (double)
+        // - Roll 1+2 = spare
+        // - Roll 2 cleared all remaining pins after a first-roll strike
+        const allKnockedAfter2=G.pinObjs.filter(p=>p.state==='standing').length===0;
+        if(isSpare||rolls[1]===10||allKnockedAfter2) resetPins=true;
+      }
     }
   } else {
     if(isStrike||rolls.length>=2)nextAction='nextFrame';
@@ -1027,7 +1044,10 @@ function nextFrameOrPlayer(){
   G.currentPlayer++;
   if(G.currentPlayer>=G.players.length){G.currentPlayer=0;G.frame++;G.roll=1;if(G.frame>10){endGame();return;}}
   else G.roll=1;
-  lOff=0;G.phase='aim';beginFrame();
+  lOff=0;G.phase='aim';
+  beginFrame();
+  // Immediately tell clients about the new turn so P2 knows it's their go
+  if(G.wifiMode)setTimeout(()=>broadcastGameState(),200);
 }
 
 function handleBonusRoll(knocked){
@@ -1397,10 +1417,15 @@ function updateSplitBalls(){
 }
 function gameLoop(){
   updateBall();updateSplitBalls();updatePins();updateParts();checkSettled();drawScene();
-  // Stream live state to clients every 3 frames during rolling for smooth animation
-  if(G.wifiMode&&G.phase==='rolling'){
+  if(G.wifiMode){
     G._broadcastTick=(G._broadcastTick||0)+1;
-    if(G._broadcastTick%3===0)broadcastGameState();
+    const isRemoteTurn=G.players[G.currentPlayer]&&G.players[G.currentPlayer].isRemote;
+    // During rolling: broadcast every 3 frames for smooth animation
+    // During aim on remote turn: broadcast every 10 frames so client knows it's their turn
+    // After result: always broadcast
+    if(G.phase==='rolling'&&G._broadcastTick%3===0) broadcastGameState();
+    else if(G.phase==='aim'&&isRemoteTurn&&G._broadcastTick%10===0) broadcastGameState();
+    else if(G.phase==='result'&&G._broadcastTick%10===0) broadcastGameState();
   }
   G.animFrame=requestAnimationFrame(gameLoop);
 }
@@ -1613,6 +1638,7 @@ function handleHostMessage(d){
 // Client canvas setup — reuse the same canvas element
 let clientState=null, clientLoopId=null;
 function initClientCanvas(){
+  isClientDevice=true; // block host touch listeners
   document.querySelectorAll('.screen').forEach(s=>{s.classList.remove('active');s.style.display='none';});
   canvas.style.display='block';
   document.getElementById('hud').style.display='block';
@@ -1702,9 +1728,12 @@ function initClientTouchHandlers(){
     if(!clientIsMyTurn)return;
     e.preventDefault();
     Array.from(e.changedTouches).forEach(t=>{
-      if(t.clientX<canvas.width*.5&&!clientLeftTouch)clientLeftTouch={id:t.identifier,cx:t.clientX};
-      else if(t.clientX>=canvas.width*.5&&!clientRightTouch)clientRightTouch={id:t.identifier};
-      if(!clientRightTouch)clientSwPts=[{x:t.clientX,y:t.clientY,ts:Date.now()}];
+      if(t.clientX<canvas.width*.5&&!clientLeftTouch){
+        clientLeftTouch={id:t.identifier,cx:t.clientX};
+      } else if(t.clientX>=canvas.width*.5&&!clientRightTouch){
+        clientRightTouch={id:t.identifier};
+        clientSwPts=[{x:t.clientX,y:t.clientY,ts:Date.now()}]; // start swing tracking
+      }
     });
   },{passive:false});
   canvas.addEventListener('touchmove',e=>{
