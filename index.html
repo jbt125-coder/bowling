@@ -102,7 +102,7 @@ canvas { display:block; touch-action:none; }
   <div class="title-sub">Roll to Glory</div>
   <button class="menu-btn btn-primary" onclick="showModeSelect('solo')">🎳 Solo Play</button>
   <button class="menu-btn btn-secondary" onclick="showModeSelect('multi')">👥 Multiplayer (2–4)</button>
-  <button class="menu-btn btn-secondary" onclick="showWifiSetup()">📶 WiFi Multiplayer</button>
+  <button class="menu-btn btn-secondary" onclick="showWifiSetup()">🌐 Online Multiplayer</button>
   <button class="menu-btn btn-secondary" style="margin-top:8px;font-size:14px" onclick="showLeaderboard()">🏆 Hall of Fame</button>
 </div>
 
@@ -182,14 +182,6 @@ canvas { display:block; touch-action:none; }
 <div id="scoreScreen" class="screen">
   <div class="setup-title" style="margin-top:20px;">🏆 Game Over!</div>
   <div id="scoreCards" class="scroll-area"></div>
-  <!-- Tap-to-expand scorecard modal -->
-  <div id="scorecardModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.88);z-index:300;overflow-y:auto;padding:20px;">
-    <div style="max-width:420px;margin:0 auto;">
-      <div style="color:#f5c842;font-size:20px;font-weight:900;margin-bottom:14px;text-align:center;" id="scorecardTitle">Scorecard</div>
-      <div id="scorecardContent"></div>
-      <button class="menu-btn btn-secondary" onclick="document.getElementById('scorecardModal').style.display='none'" style="margin-top:16px;">✕ Close</button>
-    </div>
-  </div>
   <button class="menu-btn btn-primary" onclick="goToShop()" style="margin-top:8px;">🛒 Bowl Shop</button>
   <button class="menu-btn btn-secondary" onclick="showScreen('titleScreen')" style="margin-top:4px;">🏠 Main Menu</button>
 </div>
@@ -219,17 +211,17 @@ const SHOP_ITEMS=[
   {id:'mulligan',icon:'🍫',name:'Mulligan Magic',desc:'Rewind and roll again',cost:25},
 ];
 
+// Special power balls — purchased in shop, max 3 uses per game
 const SPECIALS=[
-  {id:'tripleSplit',icon:'🔵',name:'Triple Split',desc:'Ball splits into 3 at mid-lane, each with full pin physics'},
-  {id:'wings',icon:'🦅',name:'Wings',desc:'Ball grows massive wings sweeping the entire lane width'},
-  {id:'exploder',icon:'💥',name:'Exploder',desc:'Detonates on first pin contact — blast wave clears all nearby'},
-  {id:'centerBomb',icon:'🎯',name:'Center Bomb',desc:'Ball rockets up the center; pins scatter radially outward'},
-  {id:'boomerang',icon:'🪃',name:'Boomerang',desc:'Ball hits front pins, bounces back, nails the opposite cluster'},
-  {id:'gravity',icon:'🌀',name:'Gravity Ball',desc:'All standing pins drift toward the ball\'s path before impact'},
-  {id:'ghost',icon:'👻',name:'Ghost Ball',desc:'Phases through front pins, detonates only at the back row'},
-  {id:'magnet',icon:'🧲',name:'Magnet Strike',desc:'Pins magnetically slide toward ball trajectory as it approaches'},
-  {id:'lightning',icon:'⚡',name:'Lightning Chain',desc:'First pin hit zaps electric arcs to 3 more random pins'},
-  {id:'tornado',icon:'🌪️',name:'Tornado',desc:'Ball spirals in a wide corkscrew sweeping all lane edges'},
+  {id:'tripleSplit',icon:'🔵',name:'Triple Split',desc:'Ball splits into 3 at mid-lane, each with full pin physics',cost:40},
+  {id:'wings',icon:'🦅',name:'Wings',desc:'Ball grows massive wings sweeping the entire lane width',cost:45},
+  {id:'exploder',icon:'💥',name:'Exploder',desc:'Detonates on first pin contact — blast wave clears all nearby',cost:40},
+  {id:'centerBomb',icon:'🎯',name:'Center Bomb',desc:'Ball rockets up the center; pins scatter radially outward',cost:35},
+  {id:'boomerang',icon:'🪃',name:'Boomerang',desc:'Ball hits front pins, bounces back, nails the opposite cluster',cost:50},
+  {id:'gravity',icon:'🌀',name:'Gravity Ball',desc:'All standing pins drift toward the ball\'s path before impact',cost:35},
+  {id:'magnet',icon:'🧲',name:'Magnet Strike',desc:'Pins magnetically slide toward ball trajectory as it approaches',cost:35},
+  {id:'lightning',icon:'⚡',name:'Lightning Chain',desc:'First pin hit zaps electric arcs to 3 more random pins',cost:45},
+  {id:'tornado',icon:'🌪️',name:'Tornado',desc:'Ball spirals in a wide corkscrew sweeping all lane edges',cost:50},
 ];
 
 const SNARKY=[
@@ -345,10 +337,12 @@ function startGame(){
     coins:getPD(name).coins,inventory:getPD(name).inventory||{},
     frames:Array.from({length:10},()=>({rolls:[],score:null})),
     strikes:0,spares:0,maxTurkey:0,curStreak:0,
+    specialsUsed:0, // max 3 per game
   }));
   G.ballWeight=globalWeight;G.currentPlayer=0;G.frame=1;G.roll=1;
-  G.specialPool=[...SPECIALS].sort(()=>Math.random()-0.5).map(s=>s.id);
   G.usedSpecials=[];G.bankedSpecial=null;
+  // Load current player's purchased specials
+  loadPlayerSpecials();
   beginFrame();
 }
 
@@ -376,12 +370,12 @@ function beginFrame(){
   if(G.gameMode==='bonus'&&!G.bonusPhase){
     const check={4:0,7:1,10:2};
     const expectedLevel=check[G.frame];
-    // Only show bonus interstitial if we haven't done this level yet
     if(expectedLevel!==undefined&&G.roll===1&&G.bonusLevel<=expectedLevel){
       showBonusInterstitial(expectedLevel);return;
     }
-    if(G.roll===1){showSpecialOffer();return;}
   }
+  // Reload specials for current player at start of each turn
+  if(G.roll===1)loadPlayerSpecials();
   if(G.roll===1)setupPins();
   showGameUI();startLoop();
 }
@@ -435,25 +429,49 @@ function goPlayWithBanked(){setupPins();showGameUI();startLoop();}
 function goPlaySkip(){setupPins();showGameUI();startLoop();}
 function goPlayNoSpecial(){G.bankedSpecial=null;setupPins();showGameUI();startLoop();}
 
+// Load specials from the current player's purchased inventory
+function loadPlayerSpecials(){
+  const pl=G.players[G.currentPlayer];if(!pl)return;
+  const inv=pl.inventory||{};
+  G.specialPool=SPECIALS.map(s=>s.id).filter(id=>(inv[id]||0)>0);
+  G.bankedSpecial=G.specialPool.length>0?G.specialPool[0]:null;
+  updateSpecialOrb();
+}
+
 function activateSpecial(){
   if(G.phase!=='aim'||!G.bankedSpecial)return;
+  const pl=G.players[G.currentPlayer];
+  if(pl&&pl.specialsUsed>=3){showMsg('Max 3 specials per game!','msg-gutter');return;}
   G.activeSpecial=G.activeSpecial?null:G.bankedSpecial;
   updateSpecialOrb();
 }
 function updateSpecialOrb(){
   const orb=document.getElementById('specialOrb');
-  if(!G.bankedSpecial){
+  const pl=G.players[G.currentPlayer];
+  const usesLeft=pl?3-(pl.specialsUsed||0):3;
+  if(!G.bankedSpecial||usesLeft<=0){
     document.getElementById('specialOrbIcon').textContent='🎱';
-    document.getElementById('specialOrbLabel').textContent='NO\nSPECIAL';
+    document.getElementById('specialOrbLabel').textContent=usesLeft<=0?'USED UP':'NO\nSPECIAL';
     orb.className='special-orb';return;
   }
   const sp=SPECIALS.find(s=>s.id===G.bankedSpecial);
   document.getElementById('specialOrbIcon').textContent=sp.icon;
-  document.getElementById('specialOrbLabel').textContent=G.activeSpecial?'ACTIVE':'TAP USE';
+  document.getElementById('specialOrbLabel').textContent=G.activeSpecial?'ACTIVE':`TAP (${usesLeft}✕)`;
   orb.className='special-orb'+(G.activeSpecial?' lit':'');
 }
 function consumeSpecial(){
-  if(G.activeSpecial){G.usedSpecials.push(G.activeSpecial);G.bankedSpecial=null;G.activeSpecial=null;updateSpecialOrb();}
+  if(G.activeSpecial){
+    const pl=G.players[G.currentPlayer];
+    if(pl){
+      pl.specialsUsed=(pl.specialsUsed||0)+1;
+      // Deduct one use from persistent inventory
+      const pd=getPD(pl.name);
+      if(pd.inventory[G.activeSpecial]>0){pd.inventory[G.activeSpecial]--;savePD(pl.name,pd);}
+      // Also deduct from in-game inventory
+      if(pl.inventory[G.activeSpecial]>0)pl.inventory[G.activeSpecial]--;
+    }
+    G.usedSpecials.push(G.activeSpecial);G.bankedSpecial=null;G.activeSpecial=null;updateSpecialOrb();
+  }
 }
 
 // ═══════════════════════════════════════════════
@@ -519,11 +537,7 @@ function initBall(sx){
 // TOUCH
 // ═══════════════════════════════════════════════
 let lT=null,rT=null,lOff=0,swPts=[];
-// isClientDevice: true when this phone joined as a client (P2/P3/P4)
-let isClientDevice=false;
-
 canvas.addEventListener('touchstart',e=>{
-  if(isClientDevice)return; // client has its own handlers
   e.preventDefault();
   Array.from(e.changedTouches).forEach(t=>{
     if(t.clientX<canvas.width*.5&&!lT)lT={id:t.identifier,cx:t.clientX};
@@ -532,7 +546,6 @@ canvas.addEventListener('touchstart',e=>{
   if(!G.ball.active)initBall(canvas.width*.5+lOff);
 },{passive:false});
 canvas.addEventListener('touchmove',e=>{
-  if(isClientDevice)return;
   e.preventDefault();
   Array.from(e.changedTouches).forEach(t=>{
     if(lT&&t.identifier===lT.id){const dx=t.clientX-lT.cx;lT.cx=t.clientX;const lw=canvas.width*.64;lOff=Math.max(-lw*.38,Math.min(lw*.38,lOff+dx));if(!G.ball.active)G.ball.x=canvas.width*.5+lOff;}
@@ -540,7 +553,6 @@ canvas.addEventListener('touchmove',e=>{
   });
 },{passive:false});
 canvas.addEventListener('touchend',e=>{
-  if(isClientDevice)return;
   e.preventDefault();
   Array.from(e.changedTouches).forEach(t=>{
     if(lT&&t.identifier===lT.id)lT=null;
@@ -878,12 +890,11 @@ function sweepFallenPins(cb){
       anyFallen=true;
       p.state='swept';
       p.sweepAlpha=1;
+      // Slide toward the back of the lane (negative y = toward pins)
       p.vx=(p.x-canvas.width*.5)*.04+(Math.random()-.5)*1.5;
       p.vy=-2.5-Math.random()*1.5;
     }
   });
-  // Immediately tell clients which pins are now swept
-  if(G.wifiMode)broadcastGameState();
   const delay=anyFallen?700:100;
   setTimeout(cb,delay);
 }
@@ -979,24 +990,13 @@ function advanceRoll(rolls){
   const isSpare=!isStrike&&rolls.length>=2&&rolls[0]+rolls[1]===10;
   let nextAction='nextRoll',resetPins=false;
   if(isTenth){
-    if(rolls.length===3){
-      nextAction='nextFrame';
-    } else if(rolls.length===2&&!isStrike&&!isSpare){
-      nextAction='nextFrame';
-    } else {
+    if(rolls.length===3)nextAction='nextFrame';
+    else if(rolls.length===2&&!isStrike&&!isSpare)nextAction='nextFrame';
+    else{
       nextAction='nextRoll';
-      if(rolls.length===1&&isStrike){
-        // Roll 1 was a strike — reset all 10 for roll 2
-        resetPins=true;
-      }
-      if(rolls.length===2){
-        // After roll 2, need fresh pins for roll 3 if:
-        // - Roll 2 was also a strike (double)
-        // - Roll 1+2 = spare
-        // - Roll 2 cleared all remaining pins after a first-roll strike
-        const allKnockedAfter2=G.pinObjs.filter(p=>p.state==='standing').length===0;
-        if(isSpare||rolls[1]===10||allKnockedAfter2) resetPins=true;
-      }
+      if(rolls.length===1&&isStrike)resetPins=true;
+      if(rolls.length===2&&isSpare)resetPins=true;
+      if(rolls.length===2&&rolls[0]===10&&rolls[1]===10)resetPins=true;
     }
   } else {
     if(isStrike||rolls.length>=2)nextAction='nextFrame';
@@ -1053,10 +1053,7 @@ function nextFrameOrPlayer(){
   G.currentPlayer++;
   if(G.currentPlayer>=G.players.length){G.currentPlayer=0;G.frame++;G.roll=1;if(G.frame>10){endGame();return;}}
   else G.roll=1;
-  lOff=0;G.phase='aim';
-  beginFrame();
-  // Immediately tell clients about the new turn so P2 knows it's their go
-  if(G.wifiMode)setTimeout(()=>broadcastGameState(),200);
+  lOff=0;G.phase='aim';beginFrame();
 }
 
 function handleBonusRoll(knocked){
@@ -1143,11 +1140,9 @@ function renderScoreScreen(){
   const c=document.getElementById('scoreCards');c.innerHTML='';
   sorted.forEach((pl,r)=>{
     const medals=['🥇','🥈','🥉','4️⃣'];const d=document.createElement('div');d.className='score-card';
-    d.style.cursor='pointer';
     d.innerHTML=`<div class="score-player">${medals[r]} ${pl.name}</div>
     <div class="score-total">${pl.score} pts</div>
     ${pl._nb?'<div class="pb-badge">🎉 New Personal Best!</div>':''}
-    <div style="color:#f5c84288;font-size:11px;margin-top:8px;">👆 Tap to see full scorecard</div>
     <div class="score-stats">
       <span class="stat-pill">🎳 ${pl.strikes} Strikes</span>
       <span class="stat-pill">✨ ${pl.spares} Spares</span>
@@ -1155,84 +1150,19 @@ function renderScoreScreen(){
       <span class="stat-pill">🎯 Bonus:${pl.bonusPins||0}</span>
       <span class="stat-pill">🪙 +${pl.coins}</span>
       <span class="stat-pill">📅 Best:${pl._pd.bestScore}</span>
-    </div>`;
-    d.onclick=()=>showScorecard(pl);
-    c.appendChild(d);
+    </div>`;c.appendChild(d);
   });
-}
-
-function showScorecard(pl){
-  document.getElementById('scorecardTitle').textContent=`${pl.name}'s Scorecard`;
-  const con=document.getElementById('scorecardContent');
-  // Build classic 10-frame bowling scorecard
-  let html='<div style="overflow-x:auto;">';
-  html+='<table style="width:100%;border-collapse:collapse;font-family:Georgia,serif;">';
-  // Frame headers
-  html+='<tr>';
-  for(let f=1;f<=10;f++){
-    html+=`<th style="border:1px solid #f5c84244;padding:4px;color:#c8963e;font-size:11px;text-align:center;background:#1a0d04;">${f}</th>`;
-  }
-  html+='</tr>';
-  // Rolls row
-  html+='<tr>';
-  for(let f=0;f<10;f++){
-    const rolls=pl.frames[f].rolls||[];
-    let cells='';
-    if(f<9){
-      const r1=rolls[0];const r2=rolls[1];
-      const s1=r1===10?'X':(r1===0?'-':r1);
-      const s2=r1===10?'':(r1+r2===10?'/':(r2===0?'-':(r2!==undefined?r2:'')));
-      cells=`<div style="display:flex;justify-content:flex-end;gap:2px;padding:4px;">
-        <span style="font-size:11px;color:#888;">${s1}</span>
-        <span style="font-size:13px;font-weight:900;color:#f5c842;">${s2}</span>
-      </div>`;
-    } else {
-      // 10th frame — up to 3 rolls
-      const r0=rolls[0],r1=rolls[1],r2=rolls[2];
-      const s0=r0===10?'X':(r0===0?'-':r0);
-      const s1=r0===10?(r1===10?'X':(r1===0?'-':r1)):(r0+r1===10?'/':(r1===0?'-':(r1!==undefined?r1:'')));
-      const s2=r2!==undefined?(r2===10?'X':(r2===0?'-':r2)):'';
-      cells=`<div style="display:flex;justify-content:flex-end;gap:2px;padding:4px;">
-        <span style="font-size:10px;color:#888;">${s0}</span>
-        <span style="font-size:10px;color:#888;">${s1}</span>
-        <span style="font-size:12px;font-weight:900;color:#f5c842;">${s2}</span>
-      </div>`;
-    }
-    html+=`<td style="border:1px solid #f5c84244;background:#0d0800;vertical-align:top;">${cells}</td>`;
-  }
-  html+='</tr>';
-  // Cumulative score row
-  html+='<tr>';
-  let running=0;
-  for(let f=0;f<10;f++){
-    const rolls=pl.frames[f].rolls||[];
-    const all=pl.frames.flatMap(fr=>fr.rolls);
-    const si=pl.frames.slice(0,f).reduce((a,fr)=>a+fr.rolls.length,0);
-    if(!rolls.length){html+='<td style="border:1px solid #f5c84244;padding:8px;text-align:center;background:#1a0d04;"></td>';continue;}
-    if(f<9){
-      if(rolls[0]===10)running+=10+(all[si+1]||0)+(all[si+2]||0);
-      else if((rolls[0]||0)+(rolls[1]||0)===10)running+=10+(all[si+2]||0);
-      else running+=(rolls[0]||0)+(rolls[1]||0);
-    } else {
-      running+=rolls.reduce((a,b)=>a+b,0);
-    }
-    html+=`<td style="border:1px solid #f5c84244;padding:8px;text-align:center;background:#1a0d04;color:#fff;font-weight:900;font-size:16px;">${running}</td>`;
-  }
-  html+='</tr>';
-  html+='</table></div>';
-  // Bonus pins if any
-  if(pl.bonusPins){
-    html+=`<div style="color:#4f4;text-align:center;margin-top:10px;font-size:14px;">🎯 Bonus pins: +${pl.bonusPins}</div>`;
-    html+=`<div style="color:#f5c842;text-align:center;font-size:18px;font-weight:900;margin-top:4px;">Total: ${pl.score}</div>`;
-  }
-  con.innerHTML=html;
-  document.getElementById('scorecardModal').style.display='block';
 }
 
 function goToShop(){
   const pl=G.players[G.currentPlayer]||G.players[0];const pd=getPD(pl.name);
   document.getElementById('shopCoinsDisplay').textContent=`🪙 ${pd.coins} coins`;
   const c=document.getElementById('shopItems');c.innerHTML='';
+
+  // Section: Regular powerups
+  const regHeader=document.createElement('div');
+  regHeader.innerHTML='<div style="color:#f5c842;font-size:13px;letter-spacing:2px;margin:8px 0 6px;width:100%;max-width:360px;">⚡ POWERUPS</div>';
+  c.appendChild(regHeader);
   SHOP_ITEMS.forEach(item=>{
     const owned=pd.inventory[item.id]||0;const d=document.createElement('div');d.className='shop-item';
     d.innerHTML=`<div class="shop-icon">${item.icon}</div>
@@ -1241,6 +1171,21 @@ function goToShop(){
     <button class="shop-buy" ${pd.coins<item.cost?'disabled':''} data-id="${item.id}" data-cost="${item.cost}">🪙 ${item.cost}</button>`;
     c.appendChild(d);
   });
+
+  // Section: Special power balls
+  const specHeader=document.createElement('div');
+  specHeader.innerHTML='<div style="color:#c89aff;font-size:13px;letter-spacing:2px;margin:14px 0 6px;width:100%;max-width:360px;">🎱 SPECIAL BALLS <span style="font-size:10px;color:#9966cc">(max 3 uses per game)</span></div>';
+  c.appendChild(specHeader);
+  SPECIALS.forEach(item=>{
+    const owned=pd.inventory[item.id]||0;const d=document.createElement('div');d.className='shop-item';
+    d.style.borderColor='#9966cc44';
+    d.innerHTML=`<div class="shop-icon">${item.icon}</div>
+    <div class="shop-info"><div class="shop-name" style="color:#c89aff">${item.name}</div><div class="shop-desc">${item.desc}</div>
+    <div style="color:#9966cc;font-size:11px;margin-top:2px;">Owned: ${owned}</div></div>
+    <button class="shop-buy" ${pd.coins<item.cost?'disabled':''} data-id="${item.id}" data-cost="${item.cost}" style="background:linear-gradient(135deg,#c89aff,#9966cc);color:#1a0030;">🪙 ${item.cost}</button>`;
+    c.appendChild(d);
+  });
+
   c.querySelectorAll('.shop-buy').forEach(btn=>{
     btn.addEventListener('click',()=>{
       const id=btn.dataset.id,cost=parseInt(btn.dataset.cost);const pd2=getPD(pl.name);
@@ -1498,15 +1443,10 @@ function updateSplitBalls(){
 }
 function gameLoop(){
   updateBall();updateSplitBalls();updatePins();updateParts();checkSettled();drawScene();
-  if(G.wifiMode){
+  // Stream live state to clients every 3 frames during rolling for smooth animation
+  if(G.wifiMode&&G.phase==='rolling'){
     G._broadcastTick=(G._broadcastTick||0)+1;
-    const isRemoteTurn=G.players[G.currentPlayer]&&G.players[G.currentPlayer].isRemote;
-    // During rolling: broadcast every 3 frames for smooth animation
-    // During aim on remote turn: broadcast every 10 frames so client knows it's their turn
-    // After result: always broadcast
-    if(G.phase==='rolling'&&G._broadcastTick%3===0) broadcastGameState();
-    else if(G.phase==='aim'&&isRemoteTurn&&G._broadcastTick%10===0) broadcastGameState();
-    else if(G.phase==='result'&&G._broadcastTick%10===0) broadcastGameState();
+    if(G._broadcastTick%3===0)broadcastGameState();
   }
   G.animFrame=requestAnimationFrame(gameLoop);
 }
@@ -1642,12 +1582,13 @@ function hostStartGame(){
     coins:getPD(name).coins,inventory:getPD(name).inventory||{},
     frames:Array.from({length:10},()=>({rolls:[],score:null})),
     strikes:0,spares:0,maxTurkey:0,curStreak:0,
-    isRemote:i>0, // players 2-4 are on remote phones
+    specialsUsed:0,
+    isRemote:i>0,
   }));
   G.ballWeight=12;G.currentPlayer=0;G.frame=1;G.roll=1;
-  G.specialPool=[...SPECIALS].sort(()=>Math.random()-0.5).map(s=>s.id);
   G.usedSpecials=[];G.bankedSpecial=null;
   G.wifiMode=true;
+  loadPlayerSpecials();
   beginFrame();
   // Notify clients of initial state
   setTimeout(()=>broadcastGameState(),500);
@@ -1660,7 +1601,7 @@ function broadcastGameState(){
     frame:G.frame,roll:G.roll,
     currentPlayer:G.currentPlayer,
     players:G.players.map(p=>({name:p.name,score:p.score,frames:p.frames,strikes:p.strikes,spares:p.spares})),
-    pinStates:G.pinObjs.map(p=>({x:p.x,y:p.y,state:p.state,rot:p.rot,tiltAngle:p.tiltAngle,tiltDir:p.tiltDir,sweepAlpha:p.sweepAlpha})),
+    pinStates:G.pinObjs.map(p=>({x:p.x,y:p.y,state:p.state,rot:p.rot,tiltAngle:p.tiltAngle,tiltDir:p.tiltDir})),
     ball:{x:G.ball.x,y:G.ball.y,active:G.ball.active,radius:G.ball.radius}, // always send position
     splitBalls:G.splitBalls.map(s=>({x:s.x,y:s.y,radius:s.radius})),
     phase:G.phase,bonusPhase:G.bonusPhase,
@@ -1695,7 +1636,7 @@ function joinGame(){
       });
     });
     peer.on('error',e=>{
-      document.getElementById('joinStatus').textContent='Could not connect. Check the code and WiFi.';
+      document.getElementById('joinStatus').textContent='Could not connect. Double-check the game code and try again!';
     });
   });
 }
@@ -1719,7 +1660,6 @@ function handleHostMessage(d){
 // Client canvas setup — reuse the same canvas element
 let clientState=null, clientLoopId=null;
 function initClientCanvas(){
-  isClientDevice=true; // block host touch listeners
   document.querySelectorAll('.screen').forEach(s=>{s.classList.remove('active');s.style.display='none';});
   canvas.style.display='block';
   document.getElementById('hud').style.display='block';
@@ -1772,7 +1712,7 @@ function renderClientState(state){
     state.pinStates.forEach(ps=>{
       // Construct a minimal pin-like object for drawing
       const fakePin={x:ps.x,y:ps.y,state:ps.state,rot:ps.rot||0,tiltAngle:ps.tiltAngle||0,
-        tiltDir:ps.tiltDir||1,sweepAlpha:ps.sweepAlpha!==undefined?ps.sweepAlpha:1,vRot:0,spinFloor:0};
+        tiltDir:ps.tiltDir||1,sweepAlpha:1,vRot:0,spinFloor:0};
       drawPin(fakePin);
     });
   }
@@ -1809,12 +1749,9 @@ function initClientTouchHandlers(){
     if(!clientIsMyTurn)return;
     e.preventDefault();
     Array.from(e.changedTouches).forEach(t=>{
-      if(t.clientX<canvas.width*.5&&!clientLeftTouch){
-        clientLeftTouch={id:t.identifier,cx:t.clientX};
-      } else if(t.clientX>=canvas.width*.5&&!clientRightTouch){
-        clientRightTouch={id:t.identifier};
-        clientSwPts=[{x:t.clientX,y:t.clientY,ts:Date.now()}]; // start swing tracking
-      }
+      if(t.clientX<canvas.width*.5&&!clientLeftTouch)clientLeftTouch={id:t.identifier,cx:t.clientX};
+      else if(t.clientX>=canvas.width*.5&&!clientRightTouch)clientRightTouch={id:t.identifier};
+      if(!clientRightTouch)clientSwPts=[{x:t.clientX,y:t.clientY,ts:Date.now()}];
     });
   },{passive:false});
   canvas.addEventListener('touchmove',e=>{
@@ -1852,13 +1789,39 @@ function initClientTouchHandlers(){
 
 
 showScreen('titleScreen');
+
+// ═══════════════════════════════════════════════
+// INVITE VIA TEXT + URL AUTO-JOIN
+// ═══════════════════════════════════════════════
+function sendInviteText(){
+  const code=document.getElementById('hostCodeText').textContent;
+  if(!code||code==='...')return;
+  const link=`https://jbt125-coder.github.io/bowling/?join=${code}`;
+  const msg=`🎳 Hey! I'm challenging you to Bowling King — let's see what you've got! 😄\n\nTap the link to open the game, then enter this code when it asks:\n\n🔑 Code: ${code}\n\n👉 ${link}\n\nGet ready to get destroyed 🎯`;
+  // Use SMS link — works on iPhone and Android
+  window.location.href=`sms:?&body=${encodeURIComponent(msg)}`;
+}
+
+// Check URL for ?join=CODE on page load — auto-fill join screen
+(function checkUrlJoin(){
+  const params=new URLSearchParams(window.location.search);
+  const code=params.get('join');
+  if(code){
+    // Small delay to let DOM settle
+    setTimeout(()=>{
+      showScreen('joinScreen');
+      document.getElementById('joinCodeInput').value=code.toLowerCase();
+      document.getElementById('joinStatus').textContent='Code filled in — enter your name and connect!';
+    },300);
+  }
+})();
 </script>
 
 <!-- WIFI LOBBY SCREEN -->
 
 <div id="wifiScreen" class="screen" style="background:linear-gradient(180deg,#001a2a,#002a40);padding:24px;">
-  <div style="font-size:28px;color:#4af;font-weight:900;margin-bottom:6px;text-align:center;">📶 WiFi Multiplayer</div>
-  <div style="color:#4af8;font-size:13px;text-align:center;margin-bottom:24px;letter-spacing:2px;">SAME WIFI REQUIRED</div>
+  <div style="font-size:28px;color:#4af;font-weight:900;margin-bottom:6px;text-align:center;">🌐 Online Multiplayer</div>
+  <div style="color:#4af8;font-size:13px;text-align:center;margin-bottom:24px;letter-spacing:2px;">PLAY ANYWHERE IN THE WORLD</div>
   <div style="display:flex;flex-direction:column;gap:12px;width:100%;max-width:340px;">
     <button class="menu-btn btn-primary" onclick="startAsHost()" style="font-size:16px;">🏠 Host a Game</button>
     <button class="menu-btn btn-secondary" onclick="showJoinScreen()" style="font-size:16px;">🎳 Join a Game</button>
@@ -1880,10 +1843,11 @@ showScreen('titleScreen');
       <button class="mode-btn" id="wifiBonusBtn" onclick="wifiGameMode='bonus';document.getElementById('wifiBonusBtn').classList.add('selected');document.getElementById('wifiTradBtn').classList.remove('selected')">⭐ Bonus</button>
     </div>
     <!-- Room code -->
-    <div id="hostCodeDisplay" style="background:#001020;border:3px solid #4af;border-radius:16px;padding:16px 24px;text-align:center;margin-bottom:14px;width:100%;">
+    <div id="hostCodeDisplay" style="background:#001020;border:3px solid #4af;border-radius:16px;padding:16px 24px;text-align:center;margin-bottom:10px;width:100%;">
       <div style="color:#4af8;font-size:11px;margin-bottom:4px;">GAME CODE — share with friends</div>
       <div style="font-size:30px;font-weight:900;color:#f5c842;letter-spacing:2px;" id="hostCodeText">...</div>
     </div>
+    <button onclick="sendInviteText()" style="background:linear-gradient(135deg,#25d366,#128c7e);color:#fff;border:none;border-radius:12px;padding:12px 20px;font-size:15px;font-weight:700;font-family:Georgia,serif;cursor:pointer;width:100%;margin-bottom:14px;">📱 Invite a Friend via Text</button>
     <div id="hostPlayerList" style="width:100%;margin-bottom:10px;"></div>
     <div id="hostStatus" style="color:#4af;font-size:13px;text-align:center;margin-bottom:12px;">Waiting for players...</div>
     <button id="hostStartBtn" class="menu-btn btn-primary" onclick="hostStartGame()" style="display:none;">🎳 Start Game!</button>
@@ -1895,7 +1859,7 @@ showScreen('titleScreen');
 
 <div id="joinScreen" class="screen" style="background:linear-gradient(180deg,#001a2a,#002a40);padding:24px;">
   <div style="font-size:22px;color:#4af;font-weight:900;margin-bottom:6px;text-align:center;">🎳 Join a Game</div>
-  <div style="color:#fff;font-size:13px;text-align:center;margin-bottom:20px;">Enter the code from the host's phone</div>
+  <div style="color:#fff;font-size:13px;text-align:center;margin-bottom:20px;">Enter the code from your friend's invite</div>
   <input id="joinCodeInput" placeholder="e.g. chunkypin67" style="width:100%;max-width:340px;background:#001020;border:2px solid #4af;border-radius:12px;color:#f5c842;font-size:22px;padding:14px;font-family:Georgia,serif;outline:none;text-align:center;margin-bottom:12px;" oninput="this.value=this.value.toLowerCase()">
   <input id="joinNameInput" placeholder="Your name" style="width:100%;max-width:340px;background:#001020;border:2px solid #4af8;border-radius:12px;color:#fff;font-size:18px;padding:12px;font-family:Georgia,serif;outline:none;text-align:center;margin-bottom:16px;">
   <button class="menu-btn btn-primary" onclick="joinGame()">Connect!</button>
